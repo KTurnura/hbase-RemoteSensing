@@ -67,6 +67,7 @@ public class CreateTableProcedure
     this(env, tableDescriptor, newRegions, null);
   }
 
+  // 调用
   public CreateTableProcedure(final MasterProcedureEnv env,
       final TableDescriptor tableDescriptor, final RegionInfo[] newRegions,
       final ProcedurePrepareLatch syncLatch) {
@@ -75,6 +76,8 @@ public class CreateTableProcedure
     this.newRegions = newRegions != null ? Lists.newArrayList(newRegions) : null;
   }
 
+  //  `CreateTableProcedure` 是一个基于状态机的过程。`executeFromState` 方法会根据当前的状态（`CreateTableState`）来决定执行什么操作。
+  // 每个状态代表了表创建过程中的一个步骤，如验证表是否存在、在文件系统上创建表的布局、将表信息写入 `META` 表、分配 Regions 等。
   @Override
   protected Flow executeFromState(final MasterProcedureEnv env, final CreateTableState state)
       throws InterruptedException {
@@ -83,46 +86,66 @@ public class CreateTableProcedure
     }
     try {
       switch (state) {
+        // 预创建表操作
         case CREATE_TABLE_PRE_OPERATION:
           // Verify if we can create the table
+          // 验证是否可以创建表，检查表是否已经存在等。
           boolean exists = !prepareCreate(env);
           releaseSyncLatch();
 
+          // 如果存在，标记失败并种植过程
           if (exists) {
             assert isFailed() : "the delete should have an exception here";
             return Flow.NO_MORE_STATE;
           }
 
+          // 调用预创建表钩子，并设置状态为 CREATE_TABLE_WRITE_FS_LAYOUT
           preCreate(env);
           setNextState(CreateTableState.CREATE_TABLE_WRITE_FS_LAYOUT);
           break;
+
+          // 在文件系统中创建表的布局
         case CREATE_TABLE_WRITE_FS_LAYOUT:
+          // 删除之前的
           DeleteTableProcedure.deleteFromFs(env, getTableName(), newRegions, true);
+          // 在HDFS上创建新的Region布局
           newRegions = createFsLayout(env, tableDescriptor, newRegions);
+          // 设置在一个状态
           setNextState(CreateTableState.CREATE_TABLE_ADD_TO_META);
           break;
         case CREATE_TABLE_ADD_TO_META:
+          // 将表的信息添加到Zookeeper中
           newRegions = addTableToMeta(env, tableDescriptor, newRegions);
           setNextState(CreateTableState.CREATE_TABLE_ASSIGN_REGIONS);
           break;
+
         case CREATE_TABLE_ASSIGN_REGIONS:
+          // TODO ： 核心，将表结构分给屋里的表内容！
+          // 将新创建的表的Regions 分配到RegionServers上
           setEnablingState(env, getTableName());
+          // 循环分配表位置
           addChildProcedure(env.getAssignmentManager()
             .createRoundRobinAssignProcedures(newRegions));
           setNextState(CreateTableState.CREATE_TABLE_UPDATE_DESC_CACHE);
           break;
+
         case CREATE_TABLE_UPDATE_DESC_CACHE:
+          // 更新表描述符缓存，以确保 HMaster 和 RegionServers 能够识别新表。
           setEnabledState(env, getTableName());
+          // 这个缓存用于加速表的元数据查询。
+          // 在内存中保存数据
           updateTableDescCache(env, getTableName());
           setNextState(CreateTableState.CREATE_TABLE_POST_OPERATION);
           break;
         case CREATE_TABLE_POST_OPERATION:
+          // 调用 postCreate 钩子，执行表创建后的自定义逻辑。
           postCreate(env);
           return Flow.NO_MORE_STATE;
         default:
           throw new UnsupportedOperationException("unhandled state=" + state);
       }
     } catch (IOException e) {
+      // 是否支持回归！
       if (isRollbackSupported(state)) {
         setFailure("master-create-table", e);
       } else {

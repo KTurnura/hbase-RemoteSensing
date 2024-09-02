@@ -275,6 +275,8 @@ public class HStore implements Store, HeapSize, StoreConfigInformation, Propagat
     // Why not just pass a HColumnDescriptor in here altogether?  Even if have
     // to clone it?
     scanInfo = new ScanInfo(conf, family, ttl, timeToPurgeDeletes, this.comparator);
+
+    // 获取一个Default配置的MemStore
     this.memstore = getMemstore();
 
     this.offPeakHours = OffPeakHours.getInstance(conf);

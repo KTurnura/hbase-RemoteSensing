@@ -326,15 +326,24 @@ class MemStoreFlusher implements FlushRequester {
       super(name);
     }
 
+    //
     @Override
     public void run() {
+      // 线程主循环
       while (!server.isStopped()) {
         FlushQueueEntry fqe = null;
         try {
           wakeupPending.set(false); // allow someone to wake us up again
-          fqe = flushQueue.poll(threadWakeFrequency, TimeUnit.MILLISECONDS);
+          // 从flushQueue中获取下一个flush请求，poll方法带有超时参数，
+          fqe =  flushQueue.poll(threadWakeFrequency, TimeUnit.MILLISECONDS);
+
+          // 判断是否需要flush
+          // fqe == WAKEUPFLUSH_INSTANCE 用于唤醒Flush线程
           if (fqe == null || fqe == WAKEUPFLUSH_INSTANCE) {
+            // 检查当前的内存使用情况，判断是否超过饿了低水位标记
             FlushType type = isAboveLowWaterMark();
+
+            // 内存压力下的Flush操作
             if (type != FlushType.NORMAL) {
               LOG.debug("Flush thread woke up because memory above low water="
                   + TraditionalBinaryPrefix.long2String(
@@ -343,6 +352,7 @@ class MemStoreFlusher implements FlushRequester {
               // we still select the regions based on the region's memstore data size.
               // TODO : If we want to decide based on heap over head it can be done without tracking
               // it per region.
+              // 尝试刷新一个Region以减轻全局内存压力，如果成功，Flush会继续处理下一个请求，如果失败，线程会等待1s 并重新检查
               if (!flushOneForGlobalPressure()) {
                 // Wasn't able to flush any region, but we're above low water mark
                 // This is unlikely to happen, but might happen when closing the
@@ -350,14 +360,18 @@ class MemStoreFlusher implements FlushRequester {
                 // sleep a little bit to avoid spinning, and then pretend that
                 // we flushed one, so anyone blocked will check again
                 Thread.sleep(1000);
+                // 唤醒可能正在等待Flush操作的其他线程
                 wakeUpIfBlocking();
               }
               // Enqueue another one of these tokens so we'll wake up again
+              // 将一个特殊的WAKEUPFLUSH_INSTANCE对象重新加入队列，以确保Flush线程再次被唤醒。
               wakeupFlushThread();
             }
             continue;
           }
+          // 执行具体的Flush 操作
           FlushRegionEntry fre = (FlushRegionEntry) fqe;
+          System.out.println("使用MemStoreFlusher run 方法将MemStore方法刷到磁盘中");
           if (!flushRegion(fre)) {
             break;
           }
@@ -457,16 +471,34 @@ class MemStoreFlusher implements FlushRequester {
   @Override
   public boolean requestFlush(HRegion r, boolean forceFlushAllStores,
                               FlushLifeCycleTracker tracker) {
+//    System.out.println("触发MemStore Flush 到 HFile中");
+    // 同步获取，使用使用regionsInQueue对象作为同步锁
+    // ，以确保对regionsInQueue和flushQueue的操作是线程安全的。
+    // 由于requestFlush方法可能在多个线程中被并发调用，
+    // 使用同步块可以防止多个线程同时修改这两个共享的数据结构，导致数据竞争或不一致性。
     synchronized (regionsInQueue) {
+
+      // 判断是否有已经有针对Region r 的Flush请求在对类中
       if (!regionsInQueue.containsKey(r)) {
         // This entry has no delay so it will be added at the top of the flush
         // queue. It'll come out near immediately.
+
+        // 创建并添加Flush 请求
+        // FlushRegionEntry是一个封装了Region和相关Flush请求信息的对象。
+        // 它包含了要刷盘的Region、是否强制刷新所有存储的标志，以及生命周期跟踪器
+        // 不刷新所有存储。
         FlushRegionEntry fqe = new FlushRegionEntry(r, forceFlushAllStores, tracker);
+        // 将Region r的Flush请求添加到regionsInQueue中，标记该Region已经有一个挂起的Flush请求
+
         this.regionsInQueue.put(r, fqe);
         this.flushQueue.add(fqe);
+        // 更新Flush计时器
+
+        // 这里是region的刷新长度
         r.incrementFlushesQueuedCount();
         return true;
       } else {
+        // 处理重复请求
         tracker.notExecuted("Flush already requested on " + r);
         return false;
       }

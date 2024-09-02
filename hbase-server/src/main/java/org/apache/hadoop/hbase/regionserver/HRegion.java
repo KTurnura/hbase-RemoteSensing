@@ -3212,18 +3212,28 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     protected void writeMiniBatchOperationsToMemStore(
         final MiniBatchOperationInProgress<Mutation> miniBatchOp, final long writeNumber)
         throws IOException {
+      // 用于追踪MemStore 内存使用情况的类
       MemStoreSizing memStoreAccounting = new NonThreadSafeMemStoreSizing();
+      // 便利迷你批次操作
       visitBatchOperations(true, miniBatchOp.getLastIndexExclusive(), (int index) -> {
         // We need to update the sequence id for following reasons.
+        // 更新序列号
         // 1) If the op is in replay mode, FSWALEntry#stampRegionSequenceId won't stamp sequence id.
         // 2) If no WAL, FSWALEntry won't be used
         // we use durability of the original mutation for the mutation passed by CP.
+
+
+        // 1) 如果操作处于重放模式，FSWALEntry#stampRegionSequenceId 将不会标记序列 ID。
+        // 2) 如果没有 WAL，则不会使用 FSWALEntry
+        // 我们对 CP 传递的突变使用原始突变的持久性。
         if (isInReplay() || getMutation(index).getDurability() == Durability.SKIP_WAL) {
           region.updateSequenceId(familyCellMaps[index].values(), writeNumber);
         }
+        // 写入到MemStore
         applyFamilyMapToMemStore(familyCellMaps[index], memStoreAccounting);
         return true;
       });
+      // 每次写入后，更新MemStore的使用情况！
       // update memStore size
       region.incMemStoreSize(memStoreAccounting.getDataSize(), memStoreAccounting.getHeapSize(),
         memStoreAccounting.getOffHeapSize(), memStoreAccounting.getCellsCount());
@@ -4025,17 +4035,26 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    *         OperationStatusCode and the exceptionMessage if any.
    * @throws IOException if an IO problem is encountered
    */
+  // 返回结果的每个元素对应batchOp中每个操作的执行结果
   OperationStatus[] batchMutate(BatchOperation<?> batchOp) throws IOException {
     boolean initialized = false;
+    // 一次区域级别操作的开始，该方法通常会获取必要的锁或资源，确保在执行操作期间区域（Region）的状态是稳定且一致的。
+    // 这有助于维护数据的一致性和操作的原子性，防止在并发环境下出现数据冲突或不一致。
     batchOp.startRegionOperation();
     try {
       while (!batchOp.isDone()) {
+        // 检查当前操作是否处于重放模式
         if (!batchOp.isInReplay()) {
           checkReadOnly();
         }
+        // 检查当前系统是否足够执行接下来的写操作
         checkResources();
 
+        // 操作初始化
         if (!initialized) {
+
+          // 更新写请求计数器，将当前批量操作的大小添加到总的写请求计数中。
+          //这有助于监控系统的写操作负载，进行性能分析和调优。
           this.writeRequestsCount.add(batchOp.size());
           // validate and prepare batch for write, for MutationBatchOperation it also calls CP
           // prePut()/ preDelete() hooks
@@ -4043,6 +4062,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
           initialized = true;
         }
         doMiniBatchMutate(batchOp);
+        // 检查是否需要需要将MemStore Flush到数据中
         requestFlushIfNeeded();
       }
     } finally {
@@ -4061,17 +4081,21 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    * about by applying {@code batchOp}.
    */
   private void doMiniBatchMutate(BatchOperation<?> batchOp) throws IOException {
+    // 这里的BatchOperation 可能是Put/ Delete
     boolean success = false;
     WALEdit walEdit = null;
     WriteEntry writeEntry = null;
     boolean locked = false;
     // We try to set up a batch in the range [batchOp.nextIndexToProcess,lastIndexExclusive)
+
     MiniBatchOperationInProgress<Mutation> miniBatchOp = null;
     /** Keep track of the locks we hold so we can release them in finally clause */
     List<RowLock> acquiredRowLocks = Lists.newArrayListWithCapacity(batchOp.size());
     try {
       // STEP 1. Try to acquire as many locks as we can and build mini-batch of operations with
       // locked rows
+
+      // 锁定行并构建迷你批次操作
       miniBatchOp = batchOp.lockRowsAndBuildMiniBatch(acquiredRowLocks);
 
       // We've now grabbed as many mutations off the list as we can
@@ -4080,6 +4104,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
         // Nothing to put/delete -- an exception in the above such as NoSuchColumnFamily?
         return;
       }
+      // 获取读锁
 
       lock(this.updatesLock.readLock(), miniBatchOp.getReadyToWriteCount());
       locked = true;
@@ -4087,13 +4112,16 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
       // STEP 2. Update mini batch of all operations in progress with  LATEST_TIMESTAMP timestamp
       // We should record the timestamp only after we have acquired the rowLock,
       // otherwise, newer puts/deletes are not guaranteed to have a newer timestamp
+      // 准备迷你批次操作
       long now = EnvironmentEdgeManager.currentTime();
       batchOp.prepareMiniBatchOperations(miniBatchOp, now, acquiredRowLocks);
 
       // STEP 3. Build WAL edit
+      // 构建WAL操作
       List<Pair<NonceKey, WALEdit>> walEdits = batchOp.buildWALEdits(miniBatchOp);
 
       // STEP 4. Append the WALEdits to WAL and sync.
+      // 将WAL编辑写入WAL 并同步
       for(Iterator<Pair<NonceKey, WALEdit>> it = walEdits.iterator(); it.hasNext();) {
         Pair<NonceKey, WALEdit> nonceKeyWALEditPair = it.next();
         walEdit = nonceKeyWALEditPair.getSecond();
@@ -4113,13 +4141,16 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
 
       // STEP 5. Write back to memStore
       // NOTE: writeEntry can be null here
+      // 写入MemStore
       writeEntry = batchOp.writeMiniBatchOperationsToMemStore(miniBatchOp, writeEntry);
 
       // STEP 6. Complete MiniBatchOperations: If required calls postBatchMutate() CP hook and
       // complete mvcc for last writeEntry
+      // 完成迷你批次操作
       batchOp.completeMiniBatchOperations(miniBatchOp, writeEntry);
       writeEntry = null;
       success = true;
+      // 异常处理和资源清理
     } finally {
       // Call complete rather than completeAndWait because we probably had error if walKey != null
       if (writeEntry != null) mvcc.complete(writeEntry);
@@ -4310,6 +4341,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
   private void doBatchMutate(Mutation mutation) throws IOException {
     // Currently this is only called for puts and deletes, so no nonces.
     OperationStatus[] batchMutate = this.batchMutate(new Mutation[]{mutation});
+
     if (batchMutate[0].getOperationStatusCode().equals(OperationStatusCode.SANITY_CHECK_FAILURE)) {
       throw new FailedSanityCheckException(batchMutate[0].getExceptionMsg());
     } else if (batchMutate[0].getOperationStatusCode().equals(OperationStatusCode.BAD_FAMILY)) {
@@ -4471,6 +4503,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
   private void applyToMemStore(HStore store, List<Cell> cells, boolean delta,
       MemStoreSizing memstoreAccounting) throws IOException {
     // Any change in how we update Store/MemStore needs to also be done in other applyToMemStore!!!!
+    // 我们更新 Store/MemStore 方式的任何改变也需要在其他 applyToMemStore 中完成！！！！
     boolean upsert = delta && store.getColumnFamilyDescriptor().getMaxVersions() == 1;
     if (upsert) {
       store.upsert(cells, getSmallestReadPoint(), memstoreAccounting);
@@ -7813,6 +7846,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
    */
   private Result doDelta(Operation op, Mutation mutation, long nonceGroup, long nonce,
       boolean returnResults) throws IOException {
+    System.out.println("调用doDelta");
     checkReadOnly();
     checkResources();
     checkRow(mutation.getRow(), op.toString());
@@ -8772,16 +8806,24 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver, Regi
     requestFlush0(FlushLifeCycleTracker.DUMMY);
   }
 
+  // tracker ：FlushLifeCycleTracker对象，用于跟踪Flush操作的生命周期。
+  // 在这里，它可能用于记录Flush操作的状态或执行相关的监控和日志记录。
   private void requestFlush0(FlushLifeCycleTracker tracker) {
     boolean shouldFlush = false;
+    // write state 是共享资源（在多个线程中可能会同时被访问），
+    // 因此使用同步块来确保对writestate的操作是线程安全的
     synchronized (writestate) {
+      // 检查是否有一个Flush请求挂起
       if (!this.writestate.isFlushRequested()) {
         shouldFlush = true;
         writestate.flushRequested = true;
       }
     }
+    // Flush 请求
     if (shouldFlush) {
       // Make request outside of synchronize block; HBASE-818.
+      // 通过RegionServerServices对象rsServices获取Flush请求器FlushRequester，并调用requestFlush方法发起Flush请求。
+      // 参数this表示当前Region，false表示这不是一个紧急Flush，tracker用于跟踪Flush的生命周期。
       this.rsServices.getFlushRequester().requestFlush(this, false, tracker);
       if (LOG.isDebugEnabled()) {
         LOG.debug("Flush requested on " + this.getRegionInfo().getEncodedName());

@@ -2140,20 +2140,29 @@ public class HMaster extends HRegionServer implements MasterServices {
       final long nonceGroup, final long nonce) throws IOException {
     System.out.println("尝试创建表");
     checkInitialized();
+    // 查看表结构描述器
     TableDescriptor desc = getMasterCoprocessorHost().preCreateTableRegionsInfos(tableDescriptor);
     if (desc == null) {
       throw new IOException("Creation for " + tableDescriptor + " is canceled by CP");
     }
+    // 表空间名称
     String namespace = desc.getTableName().getNamespaceAsString();
     this.clusterSchemaService.getNamespace(namespace);
 
+    // 所有Region信息
     RegionInfo[] newRegions = ModifyRegionUtils.createRegionInfos(desc, splitKeys);
+    // 检查表是否符合一些合理的限制，并且配置的值是否正确
     TableDescriptorChecker.sanityCheck(conf, desc);
 
+    // 提交该程序
     return MasterProcedureUtil
+            // 提交创建表的任务
+            // NonceProcedureRunnable：这是一个用于确保操作唯一性的工具类。nonceGroup和nonce是两个参数，代表唯一标识符，防止重复提交相同的创建表请求。
+            // this：当前的HMaster实例，被传递给NonceProcedureRunnable以访问主服务器的上下文和资源。
       .submitProcedure(new MasterProcedureUtil.NonceProcedureRunnable(this, nonceGroup, nonce) {
         @Override
         protected void run() throws IOException {
+          // 执行表创建前的协处理器预创建表
           getMaster().getMasterCoprocessorHost().preCreateTable(desc, newRegions);
 
           LOG.info(getClientIdAuditPrefix() + " create " + desc);
@@ -2163,15 +2172,23 @@ public class HMaster extends HRegionServer implements MasterServices {
           //
           // We need to wait for the procedure to potentially fail due to "prepare" sanity
           // checks. This will block only the beginning of the procedure. See HBASE-19953.
+          // 同步工具，确保在提交创建表过程之前，必要的检查和准备工作已完成。createBlockingLatch()方法创建了一个阻塞闩锁。
           ProcedurePrepareLatch latch = ProcedurePrepareLatch.createBlockingLatch();
+          // 提交一个创建表过程
+
           submitProcedure(
             new CreateTableProcedure(procedureExecutor.getEnvironment(), desc, newRegions, latch));
+          // 阻塞当前线程，等待CreateTableProcedure过程完成初步的准备工作，
           latch.await();
 
+
+          // 执行表创建后的协处理器钩子：该钩子允许在表创建后执行自定义的逻辑，例如通知其他系统或执行后续处理
           getMaster().getMasterCoprocessorHost().postCreateTable(desc, newRegions);
         }
 
         @Override
+
+        // 返回这个过程的描述信息，有助于通过日志查看记录
         protected String getDescription() {
           return "CreateTableProcedure";
         }
@@ -3077,7 +3094,6 @@ public class HMaster extends HRegionServer implements MasterServices {
     LOG.info("STARTING service " + HMaster.class.getSimpleName());
     VersionInfo.logVersion();
     new HMasterCommandLine(HMaster.class).doMain(args);
-
   }
 
   public HFileCleaner getHFileCleaner() {

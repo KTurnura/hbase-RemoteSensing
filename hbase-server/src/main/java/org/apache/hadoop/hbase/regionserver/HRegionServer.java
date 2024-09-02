@@ -1571,6 +1571,7 @@ public class HRegionServer extends HasThread implements
       for (NameStringPair e : c.getMapEntriesList()) {
         String key = e.getName();
         // The hostname the master sees us as.
+        // 设置HostName
         if (key.equals(HConstants.KEY_FOR_HOSTNAME_SEEN_BY_MASTER)) {
           String hostnameFromMasterPOV = e.getValue();
           this.serverName = ServerName.valueOf(hostnameFromMasterPOV, rpcServices.isa.getPort(),
@@ -1604,9 +1605,11 @@ public class HRegionServer extends HasThread implements
         this.conf.set(key, value);
       }
       // Set our ephemeral znode up in zookeeper now we have a name.
+      // 在 Zookeepper 中设置临时的Znode
       createMyEphemeralNode();
 
       if (updateRootDir) {
+        // 初始化FileSystem 内容，启动local/HDFS
         // initialize file system by the config fs.defaultFS and hbase.rootdir from master
         initializeFileSystem();
       }
@@ -1621,12 +1624,16 @@ public class HRegionServer extends HasThread implements
       ZNodeClearer.writeMyEphemeralNodeOnDisk(getMyEphemeralNodePath());
 
       // This call sets up an initialized replication and WAL. Later we start it up.
+      // 设置一个已经初始化的副本和WAL
       setupWALAndReplication();
+
       // Init in here rather than in constructor after thread name has been set
+      // 设置线程名称
       this.metricsTable = new MetricsTable(new MetricsTableWrapperAggregateImpl(this));
       this.metricsRegionServer = new MetricsRegionServer(
           new MetricsRegionServerWrapperImpl(this), conf, metricsTable);
       // Now that we have a metrics source, start the pause monitor
+      // 启动暂停监视器
       this.pauseMonitor = new JvmPauseMonitor(conf, getMetrics().getMetricsSource());
       pauseMonitor.start();
 
@@ -1636,10 +1643,12 @@ public class HRegionServer extends HasThread implements
       }
       // In here we start up the replication Service. Above we initialized it. TODO. Reconcile.
       // or make sense of it.
+      // 启动复制服务（启动复制源和接收器处理程序。）
       startReplicationService();
 
 
       // Set up ZK
+      // 设置Zookeeper 的配置
       LOG.info("Serving as " + this.serverName + ", RpcServer on " + rpcServices.isa +
           ", sessionid=0x" +
           Long.toHexString(this.zooKeeper.getRecoverableZooKeeper().getSessionId()));

@@ -231,6 +231,7 @@ public class HMasterCommandLine extends ServerCommandLine {
           ", regionserversCount=" + regionServersCount);
 
 
+        // 这里除了启动HMaster之外，还启动一个HRegionServer
         LocalHBaseCluster cluster = new LocalHBaseCluster(conf, mastersCount, regionServersCount,
           LocalHMaster.class, HRegionServer.class);
         // 这里getMaster 会获取到HMaster吧
